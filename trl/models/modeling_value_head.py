@@ -13,8 +13,7 @@
 # limitations under the License.
 import torch
 import torch.nn as nn
-from transformers import AutoModelForCausalLM, AutoModelForSeq2SeqLM
-
+from transformers import AutoModel, AutoModelForCausalLM, AutoModelForSeq2SeqLM
 from .modeling_base import PreTrainedModelWrapper
 
 
@@ -22,9 +21,10 @@ class ValueHead(nn.Module):
     r"""
     The ValueHead class implements a head for GPT2 that returns a scalar for each output token.
     """
-
     def __init__(self, config, **kwargs):
         super().__init__()
+        self.transformer = AutoModel.from_config(config)
+
         if not hasattr(config, "summary_dropout_prob"):
             summary_dropout_prob = kwargs.pop("summary_dropout_prob", 0.1)
         else:
@@ -32,14 +32,14 @@ class ValueHead(nn.Module):
 
         self.dropout = nn.Dropout(summary_dropout_prob) if summary_dropout_prob else nn.Identity()
 
-        # some models such as OPT have a projection layer before the word embeddings - e.g. OPT-350m
+        # get hidden_size according to number of agents
         if hasattr(config, "word_embed_proj_dim"):
             hidden_size = config.word_embed_proj_dim
         else:
             hidden_size = config.hidden_size
+        hidden_size *= kwargs.pop("n_agent", 1)
 
         self.summary = nn.Linear(hidden_size, 1)
-
         self.flatten = nn.Flatten()
 
     def forward(self, hidden_states):
@@ -87,6 +87,7 @@ class AutoModelForCausalLMWithValueHead(PreTrainedModelWrapper):
         "summary_dropout_prob",
         "v_head_initializer_range",
         "v_head_init_strategy",
+        "n_agent",
     )
 
     def __init__(self, pretrained_model, **kwargs):
@@ -102,6 +103,7 @@ class AutoModelForCausalLMWithValueHead(PreTrainedModelWrapper):
         """
         super().__init__(pretrained_model)
         v_head_kwargs, _, _ = self._split_kwargs(kwargs)
+        self.n_agent = v_head_kwargs["n_agent"]
 
         if not any(hasattr(self.pretrained_model, attribute) for attribute in self.lm_head_namings):
             raise ValueError("The model does not have a language model head, please use a model that has one.")
@@ -157,26 +159,48 @@ class AutoModelForCausalLMWithValueHead(PreTrainedModelWrapper):
                 Additional keyword arguments, that are passed to the wrapped model.
         """
         kwargs["output_hidden_states"] = True  # this had already been set in the LORA / PEFT examples
+        _input_ids = kwargs.pop("_input_ids", None)
+        _attention_mask = kwargs.pop("_attention_mask", None)
 
+        assert past_key_values is None, "Used?"
+
+        # get lm_logits and loss
         base_model_output = self.pretrained_model(
             input_ids=input_ids,
             past_key_values=past_key_values,
             attention_mask=attention_mask,
             **kwargs,
         )
-
-        last_hidden_state = base_model_output.hidden_states[-1]
         lm_logits = base_model_output.logits
         loss = base_model_output.loss
-
-        if last_hidden_state.device != self.v_head.summary.weight.device:
-            last_hidden_state = last_hidden_state.to(self.v_head.summary.weight.device)
-
-        value = self.v_head(last_hidden_state).squeeze(-1)
 
         # force upcast in fp32 if logits are in half-precision
         if lm_logits.dtype != torch.float32:
             lm_logits = lm_logits.float()
+
+        # get value
+        transformer_output = self.v_head.transformer(
+            input_ids=input_ids,
+            attention_mask=attention_mask,
+            **kwargs
+        )
+        additional_transformer_output = self.v_head.transformer(
+            input_ids=_input_ids,
+            attention_mask=_attention_mask,
+            **kwargs
+        )
+        if self.n_agent > 1:
+            last_hidden_state = torch.cat((
+                transformer_output.hidden_states[-1],
+                additional_transformer_output.hidden_states[-1]),
+                dim=-1
+            )  # last_hidden_state.shape: ([batch, seq, 768 * number of agents])
+        else:
+            last_hidden_state = transformer_output.hidden_states[-1]
+        if last_hidden_state.device != self.v_head.summary.weight.device:
+            last_hidden_state = last_hidden_state.to(self.v_head.summary.weight.device)
+
+        value = self.v_head(last_hidden_state).squeeze(-1)
 
         return (lm_logits, loss, value)
 

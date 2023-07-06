@@ -17,7 +17,6 @@ import time
 import typing
 import warnings
 from typing import Callable, List, Optional, Union
-
 import datasets
 import torch
 from accelerate import Accelerator
@@ -401,6 +400,7 @@ class PPOTrainer(BaseTrainer):
 
     def generate(
         self,
+        model,
         query_tensor: Union[torch.Tensor, List[torch.Tensor]],
         length_sampler: Callable = None,
         batch_size: int = 4,
@@ -426,29 +426,31 @@ class PPOTrainer(BaseTrainer):
         Returns:
             `torch.LongTensor`: A tensor of shape (`batch_size`, `gen_len`) containing response tokens.
         """
+        assert return_prompt is False, "return_prompt should be set to be False for training purpose"
 
         if isinstance(query_tensor, List):
             return self._generate_batched(
+                model,
                 query_tensor,
                 length_sampler=length_sampler,
                 batch_size=batch_size,
                 return_prompt=return_prompt,
                 **generation_kwargs,
             )
-
         else:
             if length_sampler is not None:
                 generation_kwargs["max_new_tokens"] = length_sampler()
-            response = self.accelerator.unwrap_model(self.model).generate(
+            response = self.accelerator.unwrap_model(model).generate(
                 input_ids=query_tensor.unsqueeze(dim=0), **generation_kwargs
             )
 
             if not return_prompt and not self.is_encoder_decoder:
-                return response[:, query_tensor.shape[0] :]
+                return response[:, query_tensor.shape[0]:]
             return response
 
     def _generate_batched(
         self,
+        model,
         query_tensors: List[torch.Tensor],
         length_sampler: Callable = None,
         batch_size: int = 4,
@@ -484,16 +486,16 @@ class PPOTrainer(BaseTrainer):
                 return_tensors="pt",
             ).to(self.current_device)
 
-            generations = self.accelerator.unwrap_model(self.model).generate(**padded_inputs, **generation_kwargs)
+            generations = self.accelerator.unwrap_model(model).generate(**padded_inputs, **generation_kwargs)
 
             for generation, mask in zip(generations, padded_inputs["attention_mask"]):
                 if not self.is_encoder_decoder:
-                    output = generation[(1 - mask).sum() :]  # remove padding
+                    output = generation[(1 - mask).sum():]  # remove padding
                 else:
                     output = generation
 
                 if not return_prompt and not self.is_encoder_decoder:
-                    output = output[(mask).sum() :]  # remove prompt
+                    output = output[(mask).sum():]  # remove prompt
                 outputs.append(output)
 
         self.tokenizer.padding_side = padding_side_default
@@ -530,6 +532,9 @@ class PPOTrainer(BaseTrainer):
                 raise ValueError(
                     f"Batch size ({batch_size}) does not match number of examples - but got {len(tensor_list)} for: {name}"
                 )
+            if batch_size % self.config.mini_batch_size != 0:
+                raise ValueError(
+                    f"Batch size ({batch_size}) divided by mini batch size ({self.config.mini_batch_size}) has modulo > 0")
 
         # add queries, scores and responses on the correct device
         queries = [tensor.to(self.current_device) for tensor in queries]
@@ -551,6 +556,7 @@ class PPOTrainer(BaseTrainer):
         queries: List[torch.LongTensor],
         responses: List[torch.LongTensor],
         scores: List[torch.FloatTensor],
+        additional_responses: List[torch.LongTensor] = None
     ):
         """
         Run a PPO optimisation step given a list of queries, model responses, and rewards.
@@ -567,7 +573,6 @@ class PPOTrainer(BaseTrainer):
             `dict[str, Any]`: A summary of the training statistics
         """
         bs = self.config.batch_size
-
         queries, responses, scores = self._step_safety_checker(bs, queries, responses, scores)
 
         # if we want to push best model to the hub
@@ -583,10 +588,15 @@ class PPOTrainer(BaseTrainer):
 
         timing = dict()
         t0 = time.time()
-
         t = time.time()
 
-        model_inputs = self.prepare_model_inputs(queries, responses)
+        if additional_responses is None:
+            model_inputs = self.prepare_model_inputs(queries, responses)
+        else:
+            print("[WARNING] put number of agents instead of manual hardcoding")
+            all_queries = queries * 2  # TODO put number of agents
+            all_responses = responses + additional_responses
+            model_inputs = self.prepare_model_inputs(all_queries, all_responses)
 
         if self.is_distributed:
             pad_first = self.tokenizer.padding_side == "left"
@@ -607,6 +617,14 @@ class PPOTrainer(BaseTrainer):
                 model_inputs["decoder_attention_mask"] = self.accelerator.pad_across_processes(
                     model_inputs["decoder_attention_mask"], dim=1, pad_index=0, pad_first=pad_first
                 )
+
+        # split between model_inputs and additional_model_inputs
+        if additional_responses is not None:
+            _model_inputs = {}
+            for key, value in model_inputs.items():
+                _model_inputs[key] = value[:bs, :]
+                _model_inputs["_" + key] = value[bs:, ]
+            model_inputs = _model_inputs
 
         model_inputs_names = list(model_inputs.keys())
 
@@ -856,9 +874,9 @@ class PPOTrainer(BaseTrainer):
         all_values = []
 
         for i in range(int(bs / fbs)):
-            input_kwargs = {key: value[i * fbs : (i + 1) * fbs] for key, value in model_inputs.items()}
-            query_batch = queries[i * fbs : (i + 1) * fbs]
-            response_batch = responses[i * fbs : (i + 1) * fbs]
+            input_kwargs = {key: value[i * fbs:(i + 1) * fbs] for key, value in model_inputs.items()}
+            query_batch = queries[i * fbs:(i + 1) * fbs]
+            response_batch = responses[i * fbs:(i + 1) * fbs]
             logits, _, values = model(**input_kwargs)
 
             if self.is_encoder_decoder:
