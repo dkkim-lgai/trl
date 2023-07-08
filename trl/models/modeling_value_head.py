@@ -178,28 +178,35 @@ class AutoModelForCausalLMWithValueHead(PreTrainedModelWrapper):
         if lm_logits.dtype != torch.float32:
             lm_logits = lm_logits.float()
 
-        # get value
         transformer_output = self.v_head.transformer(
             input_ids=input_ids,
             attention_mask=attention_mask,
             **kwargs
         )
-        additional_transformer_output = self.v_head.transformer(
-            input_ids=_input_ids,
-            attention_mask=_attention_mask,
-            **kwargs
-        )
-        if self.n_agent > 1:
-            last_hidden_state = torch.cat((
-                transformer_output.hidden_states[-1],
-                additional_transformer_output.hidden_states[-1]),
-                dim=-1
-            )  # last_hidden_state.shape: ([batch, seq, 768 * number of agents])
-        else:
+
+        # compute last_hidden_state
+        # TODO cleanup logic
+        if _input_ids is None:
             last_hidden_state = transformer_output.hidden_states[-1]
+        else:
+            if self.n_agent > 1:
+                additional_transformer_output = self.v_head.transformer(
+                    input_ids=_input_ids,
+                    attention_mask=_attention_mask,
+                    **kwargs
+                )
+                last_hidden_state = torch.cat((
+                    transformer_output.hidden_states[-1],
+                    additional_transformer_output.hidden_states[-1]),
+                    dim=-1
+                )  # last_hidden_state.shape: ([batch, seq, 768 * number of agents])
+            else:
+                last_hidden_state = transformer_output.hidden_states[-1]
+
         if last_hidden_state.device != self.v_head.summary.weight.device:
             last_hidden_state = last_hidden_state.to(self.v_head.summary.weight.device)
 
+        # get value
         value = self.v_head(last_hidden_state).squeeze(-1)
 
         return (lm_logits, loss, value)
