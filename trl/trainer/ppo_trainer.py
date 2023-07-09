@@ -496,7 +496,7 @@ class PPOTrainer(BaseTrainer):
                     output = generation
 
                 if not return_prompt and not self.is_encoder_decoder:
-                    output = output[(mask).sum() :]  # remove prompt
+                    output = output[(mask).sum():]  # remove prompt
 
                 if remove_padding and self.tokenizer.eos_token_id in output:
                     pad_mask = output == self.tokenizer.eos_token_id
@@ -683,7 +683,7 @@ class PPOTrainer(BaseTrainer):
         mini_batch_dataloader = torch.utils.data.DataLoader(
             mini_batch_data,
             batch_size=self.config.mini_batch_size,
-            shuffle=True,
+            shuffle=False,
             collate_fn=collator,
         )
 
@@ -1071,7 +1071,6 @@ class PPOTrainer(BaseTrainer):
         vf_clipfrac = masked_mean(torch.gt(vf_losses2, vf_losses1).float(), mask)
 
         ratio = torch.exp(logprobs - old_logprobs)
-
         pg_losses = -advantages * ratio
         pg_losses2 = -advantages * torch.clamp(ratio, 1.0 - self.config.cliprange, 1.0 + self.config.cliprange)
 
@@ -1135,7 +1134,6 @@ class PPOTrainer(BaseTrainer):
                 Dictionary of training step statistics
         """
         mask = data.pop("masks")
-
         kl_list = ((data["logprobs"] - data["ref_logprobs"]) * mask).sum(axis=-1)
         mean_kl = kl_list.mean()
         mean_entropy = (-data["logprobs"] * mask).sum(axis=-1).mean()
