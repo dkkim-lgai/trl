@@ -23,35 +23,33 @@ class ValueHead(nn.Module):
     """
     def __init__(self, config, **kwargs):
         super().__init__()
+        # set transformer without last layer
         self.transformer = AutoModel.from_config(config)
 
+        # set dropout layer
         if not hasattr(config, "summary_dropout_prob"):
             summary_dropout_prob = kwargs.pop("summary_dropout_prob", 0.1)
         else:
             summary_dropout_prob = config.summary_dropout_prob
-
         self.dropout = nn.Dropout(summary_dropout_prob) if summary_dropout_prob else nn.Identity()
 
-        # get hidden_size according to number of agents
+        # set last layer
         if hasattr(config, "word_embed_proj_dim"):
             hidden_size = config.word_embed_proj_dim
         else:
             hidden_size = config.hidden_size
         hidden_size *= kwargs.pop("n_agent", 1)
-
         self.fc_value = nn.Linear(hidden_size, 1)
-        self.flatten = nn.Flatten()
 
     def forward(self, hidden_states):
         output = self.dropout(hidden_states)
 
         # For now force upcast in fp32 if needed. Let's keep the
         # output in fp32 for numerical stability.
-        if output.dtype != self.summary.weight.dtype:
-            output = output.to(self.summary.weight.dtype)
+        if output.dtype != self.fc_value.weight.dtype:
+            output = output.to(self.fc_value.weight.dtype)
 
-        output = self.summary(output)
-        return output
+        return self.fc_value(output)
 
 
 class AutoModelForCausalLMWithValueHead(PreTrainedModelWrapper):
@@ -109,7 +107,6 @@ class AutoModelForCausalLMWithValueHead(PreTrainedModelWrapper):
             raise ValueError("The model does not have a language model head, please use a model that has one.")
 
         self.v_head = ValueHead(self.pretrained_model.config, **v_head_kwargs)
-
         self._init_weights(**v_head_kwargs)
 
     def _init_weights(self, **kwargs):
@@ -125,15 +122,13 @@ class AutoModelForCausalLMWithValueHead(PreTrainedModelWrapper):
                 can contain the `v_head_init_strategy` argument as well as the `v_head_initializer_range`
                 argument.
         """
-        initializer_range = kwargs.pop("v_head_initializer_range", 0.2)
-        # random init by default
         init_strategy = kwargs.pop("v_head_init_strategy", None)
         if init_strategy is None:
-            # do nothing
-            pass
+            pass  # do nothing (i.e., random init)
         elif init_strategy == "normal":
-            self.v_head.summary.weight.data.normal_(mean=0.0, std=initializer_range)
-            self.v_head.summary.bias.data.zero_()
+            initializer_range = kwargs.pop("v_head_initializer_range", 0.2)
+            self.v_head.fc_value.weight.data.normal_(mean=0.0, std=initializer_range)
+            self.v_head.fc_value.bias.data.zero_()
 
     def forward(
         self,
@@ -160,58 +155,54 @@ class AutoModelForCausalLMWithValueHead(PreTrainedModelWrapper):
         """
         kwargs["output_hidden_states"] = True  # this had already been set in the LORA / PEFT examples
         kwargs["past_key_values"] = past_key_values
-
         if self.is_peft_model and self.pretrained_model.active_peft_config.peft_type == "PREFIX_TUNING":
             kwargs.pop("past_key_values")
 
-        _input_ids = kwargs.pop("_input_ids", None)
-        _attention_mask = kwargs.pop("_attention_mask", None)
-
-        # get lm_logits and loss
+        # get policy output
         base_model_output = self.pretrained_model(
             input_ids=input_ids,
             attention_mask=attention_mask,
             **kwargs,
         )
         lm_logits = base_model_output.logits
-        loss = base_model_output.loss
-
-        # force upcast in fp32 if logits are in half-precision
         if lm_logits.dtype != torch.float32:
             lm_logits = lm_logits.float()
+        loss = base_model_output.loss
 
+        # get value output
+        hidden_state = self._get_value_hidden_state(input_ids, attention_mask, **kwargs)
+        value = self.v_head(hidden_state).squeeze(-1)
+
+        return (lm_logits, loss, value)
+
+    def _get_value_hidden_state(self, input_ids, attention_mask, **kwargs):
+        # get transformer output
         transformer_output = self.v_head.transformer(
             input_ids=input_ids,
             attention_mask=attention_mask,
             **kwargs
         )
 
-        # compute last_hidden_state
-        # TODO cleanup logic
-        if _input_ids is None:
-            last_hidden_state = transformer_output.hidden_states[-1]
+        if self.n_agent == 1:
+            hidden_state = transformer_output.hidden_states[-1]
         else:
-            if self.n_agent > 1:
-                additional_transformer_output = self.v_head.transformer(
-                    input_ids=_input_ids,
-                    attention_mask=_attention_mask,
-                    **kwargs
-                )
-                last_hidden_state = torch.cat((
-                    transformer_output.hidden_states[-1],
-                    additional_transformer_output.hidden_states[-1]),
-                    dim=-1
-                )  # last_hidden_state.shape: ([batch, seq, 768 * number of agents])
-            else:
-                last_hidden_state = transformer_output.hidden_states[-1]
+            _input_ids = kwargs.pop("_input_ids", None)
+            _attention_mask = kwargs.pop("_attention_mask", None)
+            additional_transformer_output = self.v_head.transformer(
+                input_ids=_input_ids,
+                attention_mask=_attention_mask,
+                **kwargs
+            )
+            hidden_state = torch.cat((
+                transformer_output.hidden_states[-1],
+                additional_transformer_output.hidden_states[-1]),
+                dim=-1
+            )  # last_hidden_state.shape: ([batch, seq, 768 * number of agents])
 
-        if last_hidden_state.device != self.v_head.summary.weight.device:
-            last_hidden_state = last_hidden_state.to(self.v_head.summary.weight.device)
+        if hidden_state.device != self.v_head.fc_value.weight.device:
+            hidden_state = hidden_state.to(self.v_head.fc_value.weight.device)
 
-        # get value
-        value = self.v_head(last_hidden_state).squeeze(-1)
-
-        return (lm_logits, loss, value)
+        return hidden_state
 
     def generate(self, *args, **kwargs):
         r"""
@@ -245,7 +236,6 @@ class AutoModelForCausalLMWithValueHead(PreTrainedModelWrapper):
 
     def push_to_hub(self, *args, **kwargs):
         setattr(self.pretrained_model, "v_head", self.v_head)
-
         return self.pretrained_model.push_to_hub(*args, **kwargs)
 
     def post_init(self, state_dict):
