@@ -39,7 +39,7 @@ class ValueHead(nn.Module):
             hidden_size = config.hidden_size
         hidden_size *= kwargs.pop("n_agent", 1)
 
-        self.summary = nn.Linear(hidden_size, 1)
+        self.fc_value = nn.Linear(hidden_size, 1)
         self.flatten = nn.Flatten()
 
     def forward(self, hidden_states):
