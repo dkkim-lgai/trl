@@ -94,6 +94,7 @@ class PPOConfig(object):
         default=0.2, metadata={"help": "Range for clipping values in loss calculation"}
     )
     vf_coef: Optional[float] = field(default=0.1, metadata={"help": "Scaling factor for value loss"})
+    entropy_coef: Optional[float] = field(default=0., metadata={"help": "Scaling factor for entropy loss"})
     batch_size: Optional[int] = field(default=256, metadata={"help": "Number of samples per optimisation step"})
     forward_batch_size: Optional[int] = field(
         default=None,
