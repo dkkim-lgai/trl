@@ -153,10 +153,13 @@ class AutoModelForCausalLMWithValueHead(PreTrainedModelWrapper):
             kwargs (`dict`, `optional`):
                 Additional keyword arguments, that are passed to the wrapped model.
         """
+        # set variables
         kwargs["output_hidden_states"] = True  # this had already been set in the LORA / PEFT examples
         kwargs["past_key_values"] = past_key_values
         if self.is_peft_model and self.pretrained_model.active_peft_config.peft_type == "PREFIX_TUNING":
             kwargs.pop("past_key_values")
+        _input_ids = kwargs.pop("_input_ids", None)
+        _attention_mask = kwargs.pop("_attention_mask", None)
 
         # get policy output
         base_model_output = self.pretrained_model(
@@ -170,12 +173,14 @@ class AutoModelForCausalLMWithValueHead(PreTrainedModelWrapper):
         loss = base_model_output.loss
 
         # get value output
-        hidden_state = self._get_value_hidden_state(input_ids, attention_mask, **kwargs)
+        hidden_state = self._get_value_hidden_state(
+            input_ids, attention_mask, _input_ids, _attention_mask, **kwargs
+        )
         value = self.v_head(hidden_state).squeeze(-1)
 
         return (lm_logits, loss, value)
 
-    def _get_value_hidden_state(self, input_ids, attention_mask, **kwargs):
+    def _get_value_hidden_state(self, input_ids, attention_mask, _input_ids, _attention_mask, **kwargs):
         # get transformer output
         transformer_output = self.v_head.transformer(
             input_ids=input_ids,
@@ -186,8 +191,6 @@ class AutoModelForCausalLMWithValueHead(PreTrainedModelWrapper):
         if self.n_agent == 1:
             hidden_state = transformer_output.hidden_states[-1]
         else:
-            _input_ids = kwargs.pop("_input_ids", None)
-            _attention_mask = kwargs.pop("_attention_mask", None)
             additional_transformer_output = self.v_head.transformer(
                 input_ids=_input_ids,
                 attention_mask=_attention_mask,

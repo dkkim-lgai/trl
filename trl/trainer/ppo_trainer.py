@@ -600,7 +600,7 @@ class PPOTrainer(BaseTrainer):
         if additional_responses is None:
             model_inputs = self.prepare_model_inputs(queries, responses)
         else:
-            all_queries = queries * self.agent.n_agent
+            all_queries = queries * self.model.n_agent
             all_responses = responses + additional_responses
             model_inputs = self.prepare_model_inputs(all_queries, all_responses)
 
@@ -626,11 +626,8 @@ class PPOTrainer(BaseTrainer):
 
         # split between model_inputs and additional_model_inputs
         if additional_responses is not None:
-            _model_inputs = {}
-            for key, value in model_inputs.items():
-                _model_inputs[key] = value[:bs, :]
-                _model_inputs["_" + key] = value[bs:, ]
-            model_inputs = _model_inputs
+            for key, value in list(model_inputs.items()):
+                model_inputs[key], model_inputs["_" + key] = value[:bs, :], value[bs:, ]
 
         model_inputs_names = list(model_inputs.keys())
 
