@@ -600,7 +600,7 @@ class PPOTrainer(BaseTrainer):
         if additional_responses is None:
             model_inputs = self.prepare_model_inputs(queries, responses)
         else:
-            all_queries = queries * self.model.n_agent
+            all_queries = queries * self.accelerator.unwrap_model(self.model).n_agent
             all_responses = responses + additional_responses
             model_inputs = self.prepare_model_inputs(all_queries, all_responses)
 
@@ -632,21 +632,27 @@ class PPOTrainer(BaseTrainer):
         model_inputs_names = list(model_inputs.keys())
 
         with torch.no_grad():
-            all_logprobs, _, values, masks = self.batched_forward_pass(self.model, queries, responses, model_inputs)
+            all_logprobs, _, values, masks = self.batched_forward_pass(
+                self.model, queries, responses, model_inputs, additional_responses=additional_responses
+            )
 
             # for when the model is a peft model
             if self.is_peft_model and hasattr(
                 self.accelerator.unwrap_model(self.model).pretrained_model, "disable_adapter"
             ):
                 with self.accelerator.unwrap_model(self.model).pretrained_model.disable_adapter():
-                    ref_logprobs, _, _, _ = self.batched_forward_pass(self.model, queries, responses, model_inputs)
+                    ref_logprobs, _, _, _ = self.batched_forward_pass(
+                        self.model, queries, responses, model_inputs, additional_responses=additional_responses
+                    )
             elif self.is_peft_model and not hasattr(self.model.pretrained_model, "disable_adapter"):
                 raise ValueError(
                     "You are using a `peft` version that does not support `disable_adapter`. Please update your `peft` version to the latest version."
                 )
 
             else:
-                ref_logprobs, _, _, _ = self.batched_forward_pass(self.ref_model, queries, responses, model_inputs)
+                ref_logprobs, _, _, _ = self.batched_forward_pass(
+                    self.ref_model, queries, responses, model_inputs, additional_responses=additional_responses
+                )
 
         timing["time/ppo/forward_pass"] = time.time() - t
 
@@ -655,9 +661,12 @@ class PPOTrainer(BaseTrainer):
         timing["time/ppo/compute_rewards"] = time.time() - t
 
         # upcast to float32 to avoid dataset issues
+        if additional_responses is None:
+            additional_responses = responses
         mini_batch_dict = {
             "queries": queries,
             "responses": responses,
+            "additional_responses": additional_responses,
             "logprobs": all_logprobs.to(torch.float32),
             "values": values.to(torch.float32),
             "rewards": rewards,
@@ -667,7 +676,7 @@ class PPOTrainer(BaseTrainer):
         def collator(data):
             return_dict = dict()
             for key in data[0]:
-                if key in ["queries", "responses"]:
+                if key in ["queries", "responses", "additional_responses"]:
                     return_dict[key] = [d[key] for d in data]
                 else:
                     return_dict[key] = torch.stack([d[key] for d in data]).to(self.current_device)
@@ -694,7 +703,8 @@ class PPOTrainer(BaseTrainer):
                 with self.accelerator.accumulate(self.model):
                     model_inputs = {k: batch[k] for k in model_inputs_names}
                     logprobs, logits, vpreds, _ = self.batched_forward_pass(
-                        self.model, batch["queries"], batch["responses"], model_inputs, return_logits=True
+                        self.model, batch["queries"], batch["responses"], model_inputs,
+                        additional_responses=batch["additional_responses"], return_logits=True
                     )
                     if (i % self.config.gradient_accumulation_steps) == 0:
                         self.optimizer.zero_grad()
@@ -849,6 +859,7 @@ class PPOTrainer(BaseTrainer):
         queries: torch.Tensor,
         responses: torch.Tensor,
         model_inputs: dict,
+        additional_responses: torch.Tensor = None,
         return_logits: bool = False,
     ):
         """
@@ -880,6 +891,11 @@ class PPOTrainer(BaseTrainer):
             input_kwargs = {key: value[i * fbs:(i + 1) * fbs] for key, value in model_inputs.items()}
             query_batch = queries[i * fbs:(i + 1) * fbs]
             response_batch = responses[i * fbs:(i + 1) * fbs]
+            if additional_responses is None:
+                additional_response_batch = response_batch
+            else:
+                additional_response_batch = additional_responses[i * fbs:(i + 1) * fbs]
+
             logits, _, values = model(**input_kwargs)
 
             if self.is_encoder_decoder:
@@ -902,7 +918,7 @@ class PPOTrainer(BaseTrainer):
                     start = len(query_batch[j]) - 1
                     if attention_mask[j, 0] == 0:  # offset left padding
                         start += attention_mask[j, :].nonzero()[0]
-                    end = start + len(response_batch[j])
+                    end = start + max(len(response_batch[j]), len(additional_response_batch[j]))
 
                 masks[j, :start] = 0
                 masks[j, end:] = 0
