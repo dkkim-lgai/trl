@@ -196,6 +196,26 @@ class AutoModelForCausalLMWithValueHead(PreTrainedModelWrapper):
                 attention_mask=_attention_mask,
                 **kwargs
             )
+
+            # copy hidden state values from last non-maksed values
+            last_hidden_state = transformer_output.hidden_states[-1]
+            additional_last_hidden_state = additional_transformer_output.hidden_states[-1]
+
+            for i_data in range(input_ids.shape[0]):
+                zero_indices = (attention_mask[i_data, :] == 0).nonzero()
+                if len(zero_indices) > 0:
+                    index_from = zero_indices[0]
+                    assert index_from > 0
+                    tensor_to_copy = last_hidden_state[i_data, index_from - 1, :]
+                    last_hidden_state[i_data, index_from:, :] = tensor_to_copy
+
+                zero_indices = (_attention_mask[i_data, :] == 0).nonzero()
+                if len(zero_indices) > 0:
+                    index_from = zero_indices[0]
+                    assert index_from > 0
+                    tensor_to_copy = additional_last_hidden_state[i_data, index_from - 1, :]
+                    additional_last_hidden_state[i_data, index_from:, :] = tensor_to_copy
+
             hidden_state = torch.cat((
                 transformer_output.hidden_states[-1],
                 additional_transformer_output.hidden_states[-1]),
