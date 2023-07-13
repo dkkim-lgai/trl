@@ -39,17 +39,17 @@ class ValueHead(nn.Module):
         else:
             hidden_size = config.hidden_size
         hidden_size *= kwargs.pop("n_agent", 1)
-        self.fc_value = nn.Linear(hidden_size, 1)
+        self.summary = nn.Linear(hidden_size, 1)
 
     def forward(self, hidden_states):
         output = self.dropout(hidden_states)
 
         # For now force upcast in fp32 if needed. Let's keep the
         # output in fp32 for numerical stability.
-        if output.dtype != self.fc_value.weight.dtype:
-            output = output.to(self.fc_value.weight.dtype)
+        if output.dtype != self.summary.weight.dtype:
+            output = output.to(self.summary.weight.dtype)
 
-        return self.fc_value(output)
+        return self.summary(output)
 
 
 class AutoModelForCausalLMWithValueHead(PreTrainedModelWrapper):
@@ -127,8 +127,8 @@ class AutoModelForCausalLMWithValueHead(PreTrainedModelWrapper):
             pass  # do nothing (i.e., random init)
         elif init_strategy == "normal":
             initializer_range = kwargs.pop("v_head_initializer_range", 0.2)
-            self.v_head.fc_value.weight.data.normal_(mean=0.0, std=initializer_range)
-            self.v_head.fc_value.bias.data.zero_()
+            self.v_head.summary.weight.data.normal_(mean=0.0, std=initializer_range)
+            self.v_head.summary.bias.data.zero_()
 
     def forward(
         self,
@@ -197,24 +197,24 @@ class AutoModelForCausalLMWithValueHead(PreTrainedModelWrapper):
                 **kwargs
             )
 
-            # copy hidden state values from last non-maksed values
-            last_hidden_state = transformer_output.hidden_states[-1]
-            additional_last_hidden_state = additional_transformer_output.hidden_states[-1]
+            # # copy hidden state values from last non-maksed values
+            # last_hidden_state = transformer_output.hidden_states[-1]
+            # additional_last_hidden_state = additional_transformer_output.hidden_states[-1]
 
-            for i_data in range(input_ids.shape[0]):
-                zero_indices = (attention_mask[i_data, :] == 0).nonzero()
-                if len(zero_indices) > 0:
-                    index_from = zero_indices[0]
-                    assert index_from > 0
-                    tensor_to_copy = last_hidden_state[i_data, index_from - 1, :]
-                    last_hidden_state[i_data, index_from:, :] = tensor_to_copy
+            # for i_data in range(input_ids.shape[0]):
+            #     zero_indices = (attention_mask[i_data, :] == 0).nonzero()
+            #     if len(zero_indices) > 0:
+            #         index_from = zero_indices[0]
+            #         assert index_from > 0
+            #         tensor_to_copy = last_hidden_state[i_data, index_from - 1, :]
+            #         last_hidden_state[i_data, index_from:, :] = tensor_to_copy
 
-                zero_indices = (_attention_mask[i_data, :] == 0).nonzero()
-                if len(zero_indices) > 0:
-                    index_from = zero_indices[0]
-                    assert index_from > 0
-                    tensor_to_copy = additional_last_hidden_state[i_data, index_from - 1, :]
-                    additional_last_hidden_state[i_data, index_from:, :] = tensor_to_copy
+            #     zero_indices = (_attention_mask[i_data, :] == 0).nonzero()
+            #     if len(zero_indices) > 0:
+            #         index_from = zero_indices[0]
+            #         assert index_from > 0
+            #         tensor_to_copy = additional_last_hidden_state[i_data, index_from - 1, :]
+            #         additional_last_hidden_state[i_data, index_from:, :] = tensor_to_copy
 
             hidden_state = torch.cat((
                 transformer_output.hidden_states[-1],
@@ -222,8 +222,8 @@ class AutoModelForCausalLMWithValueHead(PreTrainedModelWrapper):
                 dim=-1
             )  # last_hidden_state.shape: ([batch, seq, 768 * number of agents])
 
-        if hidden_state.device != self.v_head.fc_value.weight.device:
-            hidden_state = hidden_state.to(self.v_head.fc_value.weight.device)
+        if hidden_state.device != self.v_head.summary.weight.device:
+            hidden_state = hidden_state.to(self.v_head.summary.weight.device)
 
         return hidden_state
 
