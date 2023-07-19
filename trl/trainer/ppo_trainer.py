@@ -132,6 +132,7 @@ class PPOTrainer(BaseTrainer):
 
     def __init__(
         self,
+        accelerator=None,
         config: PPOConfig = None,
         model: PreTrainedModelWrapper = None,
         ref_model: Optional[PreTrainedModelWrapper] = None,
@@ -185,20 +186,22 @@ class PPOTrainer(BaseTrainer):
                 f"model must be a PreTrainedModelWrapper, got {type(model)} - supported architectures are: {SUPPORTED_ARCHITECTURES}"
             )
         # Step 1: Initialize Accelerator
-        self.accelerator = Accelerator(
-            log_with=config.log_with,
-            gradient_accumulation_steps=config.gradient_accumulation_steps,
-            project_config=ProjectConfiguration(**config.project_kwargs),
-            **config.accelerator_kwargs,
-        )
+        self.accelerator = accelerator
+        if self.accelerator is None:
+            self.accelerator = Accelerator(
+                log_with=config.log_with,
+                gradient_accumulation_steps=config.gradient_accumulation_steps,
+                project_config=ProjectConfiguration(**config.project_kwargs),
+                **config.accelerator_kwargs,
+            )
 
-        is_using_tensorboard = config.log_with is not None and config.log_with == "tensorboard"
+            is_using_tensorboard = config.log_with is not None and config.log_with == "tensorboard"
 
-        self.accelerator.init_trackers(
-            config.tracker_project_name,
-            config=dict(trl_ppo_trainer_config=config.to_dict()) if not is_using_tensorboard else config.to_dict(),
-            init_kwargs=config.tracker_kwargs,
-        )
+            self.accelerator.init_trackers(
+                config.tracker_project_name,
+                config=dict(trl_ppo_trainer_config=config.to_dict()) if not is_using_tensorboard else config.to_dict(),
+                init_kwargs=config.tracker_kwargs,
+            )
 
         self.model = model
         self.is_encoder_decoder = hasattr(self.model, "is_encoder_decoder")
@@ -297,8 +300,9 @@ class PPOTrainer(BaseTrainer):
             self.model, self.optimizer, self.data_collator, self.lr_scheduler
         )
 
-        for key in self.dataloader.keys():
-            self.dataloader[key] = self.accelerator.prepare(self.dataloader[key])
+        if dataset is not None:
+            for key in self.dataloader.keys():
+                self.dataloader[key] = self.accelerator.prepare(self.dataloader[key])
 
         if is_deepspeed_used:
             # 8 bit models are already set on the correct device
@@ -314,8 +318,6 @@ class PPOTrainer(BaseTrainer):
             # this hack seems to be needed for DS stage 3 to work
             if self.accelerator.state.deepspeed_plugin.zero_stage == 3:
                 self.model.train()
-        else:
-            self.ref_model = self.accelerator.prepare(self.ref_model)
 
         # In a distributed setup, only logging needs to be performed on the main process
         # check: https://pytorch.org/docs/stable/generated/torch.nn.parallel.DistributedDataParallel.html
