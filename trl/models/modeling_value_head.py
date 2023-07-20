@@ -24,7 +24,7 @@ class ValueHead(nn.Module):
     def __init__(self, config, **kwargs):
         super().__init__()
         # set transformer without last layer
-        self.transformer = AutoModel.from_config(config)
+        self.transformer = AutoModel.from_pretrained(config._name_or_path)
 
         # set dropout layer
         if not hasattr(config, "summary_dropout_prob"):
