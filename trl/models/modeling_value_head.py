@@ -247,7 +247,9 @@ class AutoModelForCausalLMWithValueHead(PreTrainedModelWrapper):
         to the state dictionary of the wrapped model by prepending the key with `v_head.`.
         """
         if not self.is_peft_model:
-            pretrained_model_state_dict = self.pretrained_model.state_dict(*args, **kwargs)
+            pretrained_model_state_dict = {}
+            for k, v in self.pretrained_model.state_dict(*args, **kwargs).items():
+                pretrained_model_state_dict[f"pretrained_model.{k}"] = v
         else:
             # if it is a peft model, only save the v_head
             pretrained_model_state_dict = {}
