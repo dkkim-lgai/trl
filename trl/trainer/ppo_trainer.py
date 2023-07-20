@@ -133,6 +133,7 @@ class PPOTrainer(BaseTrainer):
     def __init__(
         self,
         accelerator=None,
+        is_inference_only=False,
         config: PPOConfig = None,
         model: PreTrainedModelWrapper = None,
         ref_model: Optional[PreTrainedModelWrapper] = None,
@@ -291,14 +292,18 @@ class PPOTrainer(BaseTrainer):
             self.accelerator.state, "deepspeed_plugin"
         )
 
-        (
-            self.model,
-            self.optimizer,
-            self.data_collator,
-            self.lr_scheduler,
-        ) = self.accelerator.prepare(
-            self.model, self.optimizer, self.data_collator, self.lr_scheduler
-        )
+        if not is_inference_only:
+            (
+                self.model,
+                self.optimizer,
+                self.data_collator,
+                self.lr_scheduler,
+            ) = self.accelerator.prepare(
+                self.model,
+                self.optimizer,
+                self.data_collator,
+                self.lr_scheduler
+            )
 
         if dataset is not None:
             for key in self.dataloader.keys():
@@ -1303,3 +1308,12 @@ class PPOTrainer(BaseTrainer):
         self.accelerator.unwrap_model(self.model).save_pretrained(save_directory)
         self.tokenizer.save_pretrained(save_directory)
         self.create_model_card(save_directory)
+
+    def save(self):
+        self.accelerator.save_state(f".checkpoint{self.accelerator.process_index}")
+
+    def load(self, i_target, new_config):
+        self.accelerator.load_state(f".checkpoint{i_target}")
+        self.config = new_config
+        for g in self.optimizer.param_groups:
+            g['lr'] = self.config.learning_rate
