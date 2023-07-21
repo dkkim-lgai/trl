@@ -228,6 +228,7 @@ class PreTrainedModelWrapper(nn.Module):
                     pretrained_model.active_peft_config, PromptLearningConfig
                 ):
                     raise ValueError("PromptLearningConfig is not supported for PPO training.")
+
         # Then, create the full model by instantiating the wrapper class
         model = cls(pretrained_model, **trl_model_args)
 

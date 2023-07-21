@@ -17,10 +17,10 @@ import subprocess
 import warnings
 from dataclasses import dataclass, field
 from typing import Optional
-
 import numpy as np
 import requests
-
+from random import choice
+from numpy.random import uniform, randint
 from ..core import flatten_dict
 
 
@@ -195,3 +195,11 @@ class PPOConfig(object):
         for key, value in self.__dict__.items():
             output_dict[key] = value
         return flatten_dict(output_dict)
+
+    def mutate(self):
+        self.learning_rate *= uniform(0.8, 1.2)
+        self.entropy_coef *= uniform(0.8, 1.2)
+        self.init_kl_coef *= uniform(0.8, 1.2)
+        self.ppo_epochs = randint(1, 4)
+        self.kl_penalty = choice(["kl", "abs", "mse"])
+        return self
