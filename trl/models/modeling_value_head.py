@@ -188,7 +188,7 @@ class AutoModelForCausalLMWithValueHead(PreTrainedModelWrapper):
             **kwargs
         )
 
-        if self.n_agent == 1:
+        if _input_ids is None:
             hidden_state = transformer_output.hidden_states[-1]
         else:
             additional_transformer_output = self.v_head.transformer(

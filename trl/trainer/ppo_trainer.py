@@ -210,7 +210,7 @@ class PPOTrainer(BaseTrainer):
         self.is_encoder_decoder = hasattr(self.model[0], "is_encoder_decoder")
         self.is_peft_model = getattr(self.model[0], "is_peft_model", False)
 
-        if isinstance(ref_model, SUPPORTED_ARCHITECTURES):
+        if isinstance(ref_model[0], SUPPORTED_ARCHITECTURES):
             self.ref_model = ref_model
             if num_shared_layers is not None:
                 warnings.warn(
@@ -680,7 +680,7 @@ class PPOTrainer(BaseTrainer):
 
             else:
                 ref_logprobs, _, _, _ = self.batched_forward_pass(
-                    self.ref_model, queries, responses, model_inputs, additional_responses=additional_responses
+                    self.ref_model[i_agent], queries, responses, model_inputs, additional_responses=additional_responses
                 )
 
         timing["time/ppo/forward_pass"] = time.time() - t
