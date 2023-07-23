@@ -86,6 +86,7 @@ class AutoModelForCausalLMWithValueHead(PreTrainedModelWrapper):
         "v_head_initializer_range",
         "v_head_init_strategy",
         "n_agent",
+        "merge_type",
     )
 
     def __init__(self, pretrained_model, **kwargs):
@@ -102,6 +103,7 @@ class AutoModelForCausalLMWithValueHead(PreTrainedModelWrapper):
         super().__init__(pretrained_model)
         v_head_kwargs, _, _ = self._split_kwargs(kwargs)
         self.n_agent = v_head_kwargs["n_agent"]
+        self.merge_type = v_head_kwargs.pop("merge_type", None)
 
         if not any(hasattr(self.pretrained_model, attribute) for attribute in self.lm_head_namings):
             raise ValueError("The model does not have a language model head, please use a model that has one.")
@@ -196,29 +198,21 @@ class AutoModelForCausalLMWithValueHead(PreTrainedModelWrapper):
                 attention_mask=_attention_mask,
                 **kwargs
             )
+            additional_last_hidden_state = additional_transformer_output.hidden_states[-1]
 
-            # # copy hidden state values from last non-maksed values
-            # last_hidden_state = transformer_output.hidden_states[-1]
-            # additional_last_hidden_state = additional_transformer_output.hidden_states[-1]
-
-            # for i_data in range(input_ids.shape[0]):
-            #     zero_indices = (attention_mask[i_data, :] == 0).nonzero()
-            #     if len(zero_indices) > 0:
-            #         index_from = zero_indices[0]
-            #         assert index_from > 0
-            #         tensor_to_copy = last_hidden_state[i_data, index_from - 1, :]
-            #         last_hidden_state[i_data, index_from:, :] = tensor_to_copy
-
-            #     zero_indices = (_attention_mask[i_data, :] == 0).nonzero()
-            #     if len(zero_indices) > 0:
-            #         index_from = zero_indices[0]
-            #         assert index_from > 0
-            #         tensor_to_copy = additional_last_hidden_state[i_data, index_from - 1, :]
-            #         additional_last_hidden_state[i_data, index_from:, :] = tensor_to_copy
+            if self.merge_type == "last_step":
+                # copy hidden state values from last non-maksed values to all additional_last_hidden_state
+                for i_data in range(input_ids.shape[0]):
+                    zero_indices = (_attention_mask[i_data, :] == 0).nonzero()
+                    if len(zero_indices) > 0:
+                        index_from = zero_indices[0]
+                        assert index_from > 0
+                        tensor_to_copy = additional_last_hidden_state[i_data, index_from - 1, :]
+                        additional_last_hidden_state[i_data, :, :] = tensor_to_copy
 
             hidden_state = torch.cat((
                 transformer_output.hidden_states[-1],
-                additional_transformer_output.hidden_states[-1]),
+                additional_last_hidden_state),
                 dim=-1
             )  # last_hidden_state.shape: ([batch, seq, 768 * number of agents])
 
