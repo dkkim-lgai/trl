@@ -1005,8 +1005,8 @@ class PPOTrainer(BaseTrainer):
             train_stats (dict[str, `torch.Tensor`]):
                 Dictionary of training statistics
         """
-        loss_p, loss_v, train_stats = self.loss(i_agent, old_logprobs, values, rewards, logits, vpreds, logprobs, mask)
-        loss = loss_p + loss_v
+        loss_p, loss_v, loss_entropy, train_stats = self.loss(i_agent, old_logprobs, values, rewards, logits, vpreds, logprobs, mask)
+        loss = loss_p + loss_v + loss_entropy
         self.accelerator.backward(loss)
 
         if self.config[i_agent].max_grad_norm is not None:
@@ -1130,7 +1130,6 @@ class PPOTrainer(BaseTrainer):
         pg_clipfrac = masked_mean(torch.gt(pg_losses2, pg_losses).float(), mask)
         entropy = masked_mean(entropy_from_logits(logits), mask)
         entropy_loss = -entropy  # minimize negative entropy (i.e., maximize entropy)
-
         loss = pg_loss + self.config[i_agent].vf_coef * vf_loss + self.config[i_agent].entropy_coef * entropy_loss
 
         avg_ratio = masked_mean(ratio, mask).item()
@@ -1168,7 +1167,11 @@ class PPOTrainer(BaseTrainer):
                 var=value_var.detach(),
             ),
         )
-        return pg_loss, self.config[i_agent].vf_coef * vf_loss, flatten_dict(stats)
+        return \
+            pg_loss,\
+            self.config[i_agent].vf_coef * vf_loss,\
+            self.config[i_agent].entropy_coef * entropy_loss,\
+            flatten_dict(stats)
 
     def record_step_stats(self, kl_coef: float, **data):
         """
