@@ -592,7 +592,8 @@ class PPOTrainer(BaseTrainer):
         queries: List[torch.LongTensor],
         responses: List[torch.LongTensor],
         scores: List[torch.FloatTensor],
-        additional_responses: List[torch.LongTensor] = None
+        additional_queries: List[torch.LongTensor] = None,
+        additional_responses: List[torch.LongTensor] = None,
     ):
         """
         Run a PPO optimisation step given a list of queries, model responses, and rewards.
@@ -629,8 +630,10 @@ class PPOTrainer(BaseTrainer):
         if additional_responses is None:
             model_inputs = self.prepare_model_inputs(queries, responses)
         else:
-            all_queries = queries * self.accelerator.unwrap_model(self.model[i_agent]).n_agent
+            all_queries = queries + additional_queries
             all_responses = responses + additional_responses
+            for x, y in zip(all_queries, all_responses):
+                print(x.shape, y.shape)
             model_inputs = self.prepare_model_inputs(all_queries, all_responses)
 
         if self.is_distributed:
@@ -656,13 +659,17 @@ class PPOTrainer(BaseTrainer):
         # split between model_inputs and additional_model_inputs
         if additional_responses is not None:
             for key, value in list(model_inputs.items()):
+                print("key:", key)
+                for i in range(8):
+                    print(value[i, :], value[i, :].shape)
                 model_inputs[key], model_inputs["_" + key] = value[:bs, :], value[bs:, ]
 
         model_inputs_names = list(model_inputs.keys())
 
         with torch.no_grad():
             all_logprobs, _, values, masks = self.batched_forward_pass(
-                self.model[i_agent], queries, responses, model_inputs, additional_responses=additional_responses
+                self.model[i_agent], queries, responses, model_inputs,
+                additional_queries=additional_queries, additional_responses=additional_responses
             )
 
             # for when the model is a peft model
@@ -893,6 +900,7 @@ class PPOTrainer(BaseTrainer):
         queries: torch.Tensor,
         responses: torch.Tensor,
         model_inputs: dict,
+        additional_queries: torch.Tensor = None,
         additional_responses: torch.Tensor = None,
         return_logits: bool = False,
     ):
@@ -931,6 +939,11 @@ class PPOTrainer(BaseTrainer):
                 additional_response_batch = additional_responses[i * fbs:(i + 1) * fbs]
 
             logits, _, values = model(**input_kwargs)
+            print("logits.shape:", logits.shape)
+            print("values.shape:", values.shape)
+
+            import sys
+            sys.exit()
 
             if self.is_encoder_decoder:
                 input_ids = input_kwargs["decoder_input_ids"]
