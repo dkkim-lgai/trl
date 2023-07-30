@@ -206,9 +206,14 @@ class AutoModelForCausalLMWithValueHead(PreTrainedModelWrapper):
                     zero_indices = (_attention_mask[i_data, :] == 0).nonzero()
                     if len(zero_indices) > 0:
                         last_non_masked_index = zero_indices[0] - 1
-                        assert last_non_masked_index >= 0
-                        tensor_to_copy = additional_last_hidden_state[i_data, last_non_masked_index, :]
-                        additional_last_hidden_state[i_data, :, :] = tensor_to_copy
+                    else:
+                        last_non_masked_index = torch.tensor(
+                            [_attention_mask[i_data, :].shape[-1] - 1],
+                            device=self.v_head.summary.weight.device
+                            )
+                    assert last_non_masked_index >= 0
+                    tensor_to_copy = additional_last_hidden_state[i_data, last_non_masked_index, :]
+                    additional_last_hidden_state[i_data, :, :] = tensor_to_copy
 
             hidden_state = torch.cat((
                 transformer_output.hidden_states[-1],
