@@ -632,8 +632,6 @@ class PPOTrainer(BaseTrainer):
         else:
             all_queries = queries + additional_queries
             all_responses = responses + additional_responses
-            for x, y in zip(all_queries, all_responses):
-                print(x.shape, y.shape)
             model_inputs = self.prepare_model_inputs(all_queries, all_responses)
 
         if self.is_distributed:
@@ -659,17 +657,13 @@ class PPOTrainer(BaseTrainer):
         # split between model_inputs and additional_model_inputs
         if additional_responses is not None:
             for key, value in list(model_inputs.items()):
-                print("key:", key)
-                for i in range(8):
-                    print(value[i, :], value[i, :].shape)
                 model_inputs[key], model_inputs["_" + key] = value[:bs, :], value[bs:, ]
 
         model_inputs_names = list(model_inputs.keys())
 
         with torch.no_grad():
             all_logprobs, _, values, masks = self.batched_forward_pass(
-                self.model[i_agent], queries, responses, model_inputs,
-                additional_queries=additional_queries, additional_responses=additional_responses
+                self.model[i_agent], queries, responses, model_inputs
             )
 
             # for when the model is a peft model
@@ -678,7 +672,7 @@ class PPOTrainer(BaseTrainer):
             ):
                 with self.accelerator.unwrap_model(self.model).pretrained_model.disable_adapter():
                     ref_logprobs, _, _, _ = self.batched_forward_pass(
-                        self.model, queries, responses, model_inputs, additional_responses=additional_responses
+                        self.model, queries, responses, model_inputs,
                     )
             elif self.is_peft_model and not hasattr(self.model.pretrained_model, "disable_adapter"):
                 raise ValueError(
@@ -687,7 +681,7 @@ class PPOTrainer(BaseTrainer):
 
             else:
                 ref_logprobs, _, _, _ = self.batched_forward_pass(
-                    self.ref_model[i_agent], queries, responses, model_inputs, additional_responses=additional_responses
+                    self.ref_model[i_agent], queries, responses, model_inputs
                 )
 
         timing["time/ppo/forward_pass"] = time.time() - t
@@ -697,13 +691,9 @@ class PPOTrainer(BaseTrainer):
         timing["time/ppo/compute_rewards"] = time.time() - t
 
         # upcast to float32 to avoid dataset issues
-        if additional_responses is None:
-            additional_responses = responses
-
         mini_batch_dict = {
             "queries": queries,
             "responses": responses,
-            "additional_responses": additional_responses,
             "logprobs": all_logprobs.to(torch.float32),
             "values": values.to(torch.float32),
             "rewards": rewards,
@@ -713,7 +703,7 @@ class PPOTrainer(BaseTrainer):
         def collator(data):
             return_dict = dict()
             for key in data[0]:
-                if key in ["queries", "responses", "additional_responses"]:
+                if key in ["queries", "responses"]:
                     return_dict[key] = [d[key] for d in data]
                 else:
                     return_dict[key] = torch.stack([d[key] for d in data]).to(self.current_device)
@@ -741,7 +731,7 @@ class PPOTrainer(BaseTrainer):
                     model_inputs = {k: batch[k] for k in model_inputs_names}
                     logprobs, logits, vpreds, _ = self.batched_forward_pass(
                         self.model[i_agent], batch["queries"], batch["responses"], model_inputs,
-                        additional_responses=batch["additional_responses"], return_logits=True
+                        return_logits=True
                     )
                     if (i % self.config[i_agent].gradient_accumulation_steps) == 0:
                         self.optimizer[i_agent].zero_grad()
@@ -933,17 +923,7 @@ class PPOTrainer(BaseTrainer):
             input_kwargs = {key: value[i * fbs:(i + 1) * fbs] for key, value in model_inputs.items()}
             query_batch = queries[i * fbs:(i + 1) * fbs]
             response_batch = responses[i * fbs:(i + 1) * fbs]
-            if additional_responses is None:
-                additional_response_batch = response_batch
-            else:
-                additional_response_batch = additional_responses[i * fbs:(i + 1) * fbs]
-
             logits, _, values = model(**input_kwargs)
-            print("logits.shape:", logits.shape)
-            print("values.shape:", values.shape)
-
-            import sys
-            sys.exit()
 
             if self.is_encoder_decoder:
                 input_ids = input_kwargs["decoder_input_ids"]
@@ -962,10 +942,13 @@ class PPOTrainer(BaseTrainer):
                     start = 1
                     end = attention_mask[j, :].sum() - 1
                 else:
+                    # NOTE Not using additional_query and additional_response in mask calculation
+                    # since "last_step" merge already summarized other agent's actions and thus
+                    # only need to apply mask for agent's own actions
                     start = len(query_batch[j]) - 1
                     if attention_mask[j, 0] == 0:  # offset left padding
                         start += attention_mask[j, :].nonzero()[0]
-                    end = start + max(len(response_batch[j]), len(additional_response_batch[j]))
+                    end = start + len(response_batch[j])
 
                 masks[j, :start] = 0
                 masks[j, end:] = 0
