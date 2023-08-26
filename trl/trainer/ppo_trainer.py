@@ -32,6 +32,7 @@ from transformers import (
     PreTrainedTokenizer,
     PreTrainedTokenizerBase,
     PreTrainedTokenizerFast,
+    get_scheduler
 )
 
 from ..core import (
@@ -275,18 +276,28 @@ class PPOTrainer(BaseTrainer):
         else:
             self.optimizer = optimizer
 
-        self.lr_scheduler = lr_scheduler
-        if self.lr_scheduler is not None:
-            lr_scheduler_class = (
-                torch.optim.lr_scheduler._LRScheduler
-                if not is_torch_greater_2_0()
-                else torch.optim.lr_scheduler.LRScheduler
-            )
-
-            if not isinstance(self.lr_scheduler, lr_scheduler_class):
-                raise ValueError(
-                    "lr_scheduler must be a torch.optim.lr_scheduler._LRScheduler or torch.optim.lr_scheduler.LRScheduler (for torch >= 2.0)"
+        if lr_scheduler is None:
+            self.lr_scheduler = {}
+            for i_agent in range(self.n_agent):
+                self.lr_scheduler[i_agent] = get_scheduler(
+                    name="linear",
+                    optimizer=self.optimizer[i_agent],
+                    num_warmup_steps=0,
+                    num_training_steps=self.config[i_agent].steps
                 )
+        else:
+            self.lr_scheduler = lr_scheduler
+
+        # check correct lr_scheduler_class
+        lr_scheduler_class = (
+            torch.optim.lr_scheduler._LRScheduler
+            if not is_torch_greater_2_0()
+            else torch.optim.lr_scheduler.LRScheduler
+        )
+        if not isinstance(self.lr_scheduler[0], lr_scheduler_class):
+            raise ValueError(
+                "lr_scheduler must be a torch.optim.lr_scheduler._LRScheduler or torch.optim.lr_scheduler.LRScheduler (for torch >= 2.0)"
+            )
 
         if self.config[0].adap_kl_ctrl:
             self.kl_ctl = AdaptiveKLController(self.config.init_kl_coef, self.config.target, self.config.horizon)
@@ -798,7 +809,7 @@ class PPOTrainer(BaseTrainer):
             stats = convert_to_scalar(stats)
 
         if self.lr_scheduler is not None:
-            self.lr_scheduler.step()
+            self.lr_scheduler[i_agent].step()
 
         return stats
 
@@ -1334,6 +1345,8 @@ class PPOTrainer(BaseTrainer):
         self.create_model_card(save_directory)
 
     def copy(self, i_best, i_worst):
+        raise ValueError("used?")
+
         del self.model[i_worst]
         del self.optimizer[i_worst]
         del self.config[i_worst]
