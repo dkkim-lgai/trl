@@ -605,6 +605,7 @@ class PPOTrainer(BaseTrainer):
         scores: List[torch.FloatTensor],
         additional_queries: List[torch.LongTensor] = None,
         additional_responses: List[torch.LongTensor] = None,
+        mask_indices: List[int] = None,
     ):
         """
         Run a PPO optimisation step given a list of queries, model responses, and rewards.
@@ -694,6 +695,11 @@ class PPOTrainer(BaseTrainer):
                 ref_logprobs, _, _, _ = self.batched_forward_pass(
                     self.ref_model[i_agent], queries, responses, model_inputs
                 )
+
+        # update masks if mask_indices are provided
+        if mask_indices is not None:
+            for i_mask in mask_indices:
+                masks[i_mask, :] = 0
 
         timing["time/ppo/forward_pass"] = time.time() - t
 
@@ -1052,10 +1058,10 @@ class PPOTrainer(BaseTrainer):
             non_score_reward = -self.kl_ctl[i_agent].value * kl
             non_score_rewards.append(non_score_reward)
             reward = non_score_reward.clone()
-            last_non_masked_index = mask.nonzero()[-1]
-
             # reward is preference model score + KL penalty
-            reward[last_non_masked_index] += score
+            if len(mask.nonzero()) > 0:
+                last_non_masked_index = mask.nonzero()[-1]
+                reward[last_non_masked_index] += score
             rewards.append(reward)
 
         return torch.stack(rewards), torch.stack(non_score_rewards)
