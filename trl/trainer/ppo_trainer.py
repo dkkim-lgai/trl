@@ -320,7 +320,8 @@ class PPOTrainer(BaseTrainer):
                 self.optimizer[i_agent] = self.accelerator.prepare(self.optimizer[i_agent])
 
             self.data_collator = self.accelerator.prepare(self.data_collator)
-            self.lr_scheduler = self.accelerator.prepare(self.lr_scheduler)
+            for i_agent in range(self.n_agent):
+                self.lr_scheduler[i_agent] = self.accelerator.prepare(self.lr_scheduler[i_agent])
 
         if dataset is not None:
             for key in self.dataloader.keys():
