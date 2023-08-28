@@ -144,7 +144,7 @@ class PPOTrainer(BaseTrainer):
         optimizer: Optional[torch.optim.Optimizer] = None,
         data_collator: Optional[typing.Callable] = None,
         num_shared_layers: Optional[int] = None,
-        lr_scheduler: Optional[torch.optim.lr_scheduler._LRScheduler] = None,
+        lr_scheduler: Optional[str] = None,
     ):
         """
         Initialize PPOTrainer.
@@ -276,28 +276,30 @@ class PPOTrainer(BaseTrainer):
         else:
             self.optimizer = optimizer
 
-        if lr_scheduler is None:
+        if lr_scheduler == "constant":
+            self.lr_scheduler = None
+        elif lr_scheduler == "linear":
             self.lr_scheduler = {}
             for i_agent in range(self.n_agent):
                 self.lr_scheduler[i_agent] = get_scheduler(
                     name="linear",
                     optimizer=self.optimizer[i_agent],
                     num_warmup_steps=0,
-                    num_training_steps=self.config[i_agent].steps
+                    num_training_steps=self.config[i_agent].steps * 4
+                )
+
+            # check correct lr_scheduler_class
+            lr_scheduler_class = (
+                torch.optim.lr_scheduler._LRScheduler
+                if not is_torch_greater_2_0()
+                else torch.optim.lr_scheduler.LRScheduler
+            )
+            if not isinstance(self.lr_scheduler[0], lr_scheduler_class):
+                raise ValueError(
+                    "lr_scheduler must be a torch.optim.lr_scheduler._LRScheduler or torch.optim.lr_scheduler.LRScheduler (for torch >= 2.0)"
                 )
         else:
-            self.lr_scheduler = lr_scheduler
-
-        # check correct lr_scheduler_class
-        lr_scheduler_class = (
-            torch.optim.lr_scheduler._LRScheduler
-            if not is_torch_greater_2_0()
-            else torch.optim.lr_scheduler.LRScheduler
-        )
-        if not isinstance(self.lr_scheduler[0], lr_scheduler_class):
-            raise ValueError(
-                "lr_scheduler must be a torch.optim.lr_scheduler._LRScheduler or torch.optim.lr_scheduler.LRScheduler (for torch >= 2.0)"
-            )
+            raise ValueError("Unsupported lr_scheduler type")
 
         if self.config[0].adap_kl_ctrl:
             self.kl_ctl = AdaptiveKLController(self.config.init_kl_coef, self.config.target, self.config.horizon)
@@ -320,8 +322,10 @@ class PPOTrainer(BaseTrainer):
                 self.optimizer[i_agent] = self.accelerator.prepare(self.optimizer[i_agent])
 
             self.data_collator = self.accelerator.prepare(self.data_collator)
-            for i_agent in range(self.n_agent):
-                self.lr_scheduler[i_agent] = self.accelerator.prepare(self.lr_scheduler[i_agent])
+
+            if self.lr_scheduler is not None:
+                for i_agent in range(self.n_agent):
+                    self.lr_scheduler[i_agent] = self.accelerator.prepare(self.lr_scheduler[i_agent])
 
         if dataset is not None:
             for key in self.dataloader.keys():
@@ -604,6 +608,7 @@ class PPOTrainer(BaseTrainer):
         queries: List[torch.LongTensor],
         responses: List[torch.LongTensor],
         scores: List[torch.FloatTensor],
+        timestep,
         additional_queries: List[torch.LongTensor] = None,
         additional_responses: List[torch.LongTensor] = None,
         mask_indices: List[int] = None,
@@ -622,6 +627,7 @@ class PPOTrainer(BaseTrainer):
         Returns:
             `dict[str, Any]`: A summary of the training statistics
         """
+        self.timestep = timestep
         bs = self.config[i_agent].batch_size
         queries, responses, scores = self._step_safety_checker(i_agent, bs, queries, responses, scores)
 
@@ -1144,7 +1150,12 @@ class PPOTrainer(BaseTrainer):
         pg_clipfrac = masked_mean(torch.gt(pg_losses2, pg_losses).float(), mask)
         entropy = masked_mean(entropy_from_logits(logits), mask)
         entropy_loss = -entropy  # minimize negative entropy (i.e., maximize entropy)
-        loss = pg_loss + self.config[i_agent].vf_coef * vf_loss + self.config[i_agent].entropy_coef * entropy_loss
+
+        # update entropy_coef according to linear schedule
+        slope = self.config[i_agent].entropy_coef / self.config[i_agent].steps
+        offset = self.config[i_agent].entropy_coef
+        entropy_coef = -slope * self.timestep + offset
+        loss = pg_loss + self.config[i_agent].vf_coef * vf_loss + entropy_coef * entropy_loss
 
         avg_ratio = masked_mean(ratio, mask).item()
         if avg_ratio > self.config[i_agent].ratio_threshold:
@@ -1184,7 +1195,7 @@ class PPOTrainer(BaseTrainer):
         return \
             pg_loss,\
             self.config[i_agent].vf_coef * vf_loss,\
-            self.config[i_agent].entropy_coef * entropy_loss,\
+            entropy_coef * entropy_loss,\
             flatten_dict(stats)
 
     def record_step_stats(self, kl_coef: float, **data):
