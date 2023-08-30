@@ -1156,7 +1156,7 @@ class PPOTrainer(BaseTrainer):
         offset = self.config[i_agent].entropy_coef
         entropy_coef = -slope * self.timestep + offset
         loss = pg_loss + self.config[i_agent].vf_coef * vf_loss + entropy_coef * entropy_loss
-        if self.timestep % 50:
+        if self.timestep % 50 == 0:
             print("entropy_coef {} at timestep {}".format(entropy_coef, self.timestep))
 
         avg_ratio = masked_mean(ratio, mask).item()
