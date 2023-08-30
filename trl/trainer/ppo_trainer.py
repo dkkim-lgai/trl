@@ -1154,7 +1154,7 @@ class PPOTrainer(BaseTrainer):
         # update entropy_coef according to linear schedule
         slope = self.config[i_agent].entropy_coef / 250  # self.config[i_agent].steps
         offset = self.config[i_agent].entropy_coef
-        entropy_coef = -slope * self.timestep + offset
+        entropy_coef = max(0., -slope * self.timestep + offset)
         loss = pg_loss + self.config[i_agent].vf_coef * vf_loss + entropy_coef * entropy_loss
         if self.timestep % 50 == 0:
             print("entropy_coef {} at timestep {}".format(entropy_coef, self.timestep))
