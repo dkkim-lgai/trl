@@ -1155,6 +1155,7 @@ class PPOTrainer(BaseTrainer):
         slope = self.config[i_agent].entropy_coef / 250  # self.config[i_agent].steps
         offset = self.config[i_agent].entropy_coef
         entropy_coef = max(0., -slope * self.timestep + offset)
+        assert entropy_coef >= 0., "entropy coef is negative"
         loss = pg_loss + self.config[i_agent].vf_coef * vf_loss + entropy_coef * entropy_loss
         if self.timestep % 50 == 0:
             print("entropy_coef {} at timestep {}".format(entropy_coef, self.timestep))
