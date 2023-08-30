@@ -1150,15 +1150,7 @@ class PPOTrainer(BaseTrainer):
         pg_clipfrac = masked_mean(torch.gt(pg_losses2, pg_losses).float(), mask)
         entropy = masked_mean(entropy_from_logits(logits), mask)
         entropy_loss = -entropy  # minimize negative entropy (i.e., maximize entropy)
-
-        # update entropy_coef according to linear schedule
-        slope = self.config[i_agent].entropy_coef / 250  # self.config[i_agent].steps
-        offset = self.config[i_agent].entropy_coef
-        entropy_coef = max(0., -slope * self.timestep + offset)
-        assert entropy_coef >= 0., "entropy coef is negative"
-        loss = pg_loss + self.config[i_agent].vf_coef * vf_loss + entropy_coef * entropy_loss
-        if self.timestep % 50 == 0:
-            print("entropy_coef {} at timestep {}".format(entropy_coef, self.timestep))
+        loss = pg_loss + self.config[i_agent].vf_coef * vf_loss + self.config[i_agent].entropy_coef * entropy_loss
 
         avg_ratio = masked_mean(ratio, mask).item()
         if avg_ratio > self.config[i_agent].ratio_threshold:
@@ -1198,7 +1190,7 @@ class PPOTrainer(BaseTrainer):
         return \
             pg_loss,\
             self.config[i_agent].vf_coef * vf_loss,\
-            entropy_coef * entropy_loss,\
+            self.config[i_agent].entropy_coef * entropy_loss,\
             flatten_dict(stats)
 
     def record_step_stats(self, kl_coef: float, **data):
