@@ -1028,12 +1028,8 @@ class PPOTrainer(BaseTrainer):
         loss_p, loss_v, loss_entropy, train_stats = self.loss(i_agent, old_logprobs, values, rewards, logits, vpreds, logprobs, mask)
         loss = loss_p + loss_v + loss_entropy
         self.accelerator.backward(loss)
-
-        if self.config[i_agent].max_grad_norm is not None:
-            torch.nn.utils.clip_grad_norm_(
-                filter(lambda p: p.requires_grad, self.model[i_agent].parameters()), self.config[i_agent].max_grad_norm
-            )
-
+        if self.accelerator.sync_gradients:
+            self.accelerator.clip_grad_norm_(self.model[i_agent].parameters(), 10.)
         t = time.time()
         self.optimizer[i_agent].step()
         train_stats["time/ppo/optimizer_step"] = torch.Tensor([time.time() - t]).to(self.current_device)
