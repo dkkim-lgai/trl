@@ -1029,7 +1029,7 @@ class PPOTrainer(BaseTrainer):
         loss = loss_p + loss_v + loss_entropy
         self.accelerator.backward(loss)
         if self.accelerator.sync_gradients:
-            self.accelerator.clip_grad_norm_(self.model[i_agent].parameters(), 10.)
+            self.accelerator.clip_grad_value_(self.model[i_agent].parameters(), 50.)
         t = time.time()
         self.optimizer[i_agent].step()
         train_stats["time/ppo/optimizer_step"] = torch.Tensor([time.time() - t]).to(self.current_device)
