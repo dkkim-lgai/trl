@@ -1029,7 +1029,7 @@ class PPOTrainer(BaseTrainer):
         loss = loss_p + loss_v + loss_entropy
         self.accelerator.backward(loss)
         if self.accelerator.sync_gradients:
-            self.accelerator.clip_grad_value_(self.model[i_agent].parameters(), 50.)
+            self.accelerator.clip_grad_value_(self.model[i_agent].parameters(), 1000.)
         t = time.time()
         self.optimizer[i_agent].step()
         train_stats["time/ppo/optimizer_step"] = torch.Tensor([time.time() - t]).to(self.current_device)
@@ -1155,6 +1155,7 @@ class PPOTrainer(BaseTrainer):
             )
             pg_loss = pg_loss * 0.0
             vf_loss = vf_loss * 0.0
+            entropy_loss = entropy_loss * 0.0
             loss = loss * 0.0
 
         approxkl = 0.5 * masked_mean((logprobs - old_logprobs) ** 2, mask)
@@ -1162,6 +1163,12 @@ class PPOTrainer(BaseTrainer):
 
         return_mean, return_var = masked_mean(returns, mask), masked_var(returns, mask)
         value_mean, value_var = masked_mean(values, mask), masked_var(values, mask)
+
+        if mask.sum() < 2:
+            pg_loss = ratio.sum() * 0.0
+            vf_loss = vf_losses1.sum() * 0.0
+            entropy_loss = logits.sum() * 0.0
+            loss = pg_loss + vf_loss + entropy_loss
 
         stats = dict(
             loss=dict(policy=pg_loss.detach(), value=vf_loss.detach(), total=loss.detach()),
@@ -1183,6 +1190,7 @@ class PPOTrainer(BaseTrainer):
                 var=value_var.detach(),
             ),
         )
+
         return \
             pg_loss,\
             self.config[i_agent].vf_coef * vf_loss,\
