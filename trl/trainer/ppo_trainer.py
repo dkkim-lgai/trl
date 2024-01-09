@@ -1035,6 +1035,9 @@ class PPOTrainer(BaseTrainer):
             t = time.time()
             self.optimizer[i_agent].step()
             train_stats["time/ppo/optimizer_step"] = torch.Tensor([time.time() - t]).to(self.current_device)
+        else:
+            t = time.time()
+            train_stats["time/ppo/optimizer_step"] = torch.Tensor([time.time() - t]).to(self.current_device)
         return train_stats
 
     def compute_rewards(
